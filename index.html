@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Gesture Particle System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="container"></div>
+    <video id="video" autoplay playsinline></video>
+    
+    <div id="controls">
+        <h3>Hand Gesture Controls</h3>
+        <div>👌 Pinch: Expand & color shift</div>
+        <div>✌️ Peace sign: Switch template</div>
+        <div>✋ Move hand: Rotate particles</div>
+        <div class="template" style="margin-top: 10px;">Template: <span id="currentTemplate">spiral</span></div>
+        <div class="status">Status: <span id="status">Waiting for hand...</span></div>
+    </div>
+    
+    <div id="loading">Loading hand tracking...</div>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    
+    <!-- Main Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>
+
