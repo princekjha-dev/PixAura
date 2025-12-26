@@ -1,4 +1,4 @@
-# Screenora
+# PixAura
 
 An interactive 3D particle system controlled by hand gestures using computer vision. Create mesmerizing visual patterns that respond to your hand movements in real-time.
 
@@ -36,8 +36,8 @@ Open `index.html` in a modern web browser with camera access to start interactin
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/screenora.git
-cd screenora
+git clone https://github.com/CloneMaster2028/PixAura.git
+cd PixAura
 ```
 
 2. Serve the files using a local web server:
@@ -76,7 +76,7 @@ http://localhost:8000
 ## 📁 Project Structure
 
 ```
-screenora/
+PixAura/
 │
 ├── index.html          # Main HTML file
 ├── app.js             # Core application logic
