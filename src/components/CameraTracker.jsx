@@ -6,37 +6,77 @@ const FINGER_PIPS = [3, 6, 10, 14, 18];
 
 function isFingerExtended(lm, idx) {
   if (idx === 0) {
-    // Thumb
     return Math.abs(lm[4].x - lm[0].x) > Math.abs(lm[2].x - lm[0].x) * 0.85;
   }
   return lm[FINGER_TIPS[idx]].y < lm[FINGER_PIPS[idx]].y - 0.02;
 }
 
-function detectGesture(lm) {
-  const thumb = lm[4];
-  const index = lm[8];
+function computeHandMetrics(lm) {
+  const wrist = lm[0];
+  const thumbTip = lm[4];
+  const indexTip = lm[8];
+  const middleMcp = lm[9];
+
+  // 1. Pinch Distance (Thumb Tip to Index Tip)
   const pinchDist = Math.hypot(
-    thumb.x - index.x,
-    thumb.y - index.y,
-    (thumb.z - index.z) * 3
+    thumbTip.x - indexTip.x,
+    thumbTip.y - indexTip.y,
+    (thumbTip.z - indexTip.z) * 2.5
   );
 
-  if (pinchDist < 0.075) {
-    return { name: 'pinch', pinchDist };
+  // 2. Hand Openness / Spread (Average distance from all 5 fingertips to wrist)
+  let totalSpread = 0;
+  for (let i = 0; i < FINGER_TIPS.length; i++) {
+    const tip = lm[FINGER_TIPS[i]];
+    totalSpread += Math.hypot(tip.x - wrist.x, tip.y - wrist.y, tip.z - wrist.z);
   }
+  const avgSpread = totalSpread / 5;
+  // Normalized openness from 0.0 (tight fist) to 1.0 (fully open hand)
+  const openness = Math.min(1.0, Math.max(0.0, (avgSpread - 0.18) / 0.32));
 
+  // 3. Hand Tilt / Rotation Angle in 2D Screen Space
+  const dx = middleMcp.x - wrist.x;
+  const dy = -(middleMcp.y - wrist.y);
+  const handAngle = Math.atan2(dx, dy); // Angle in radians
+
+  // 4. Extended Fingers
   const ext = [0, 1, 2, 3, 4].map((i) => isFingerExtended(lm, i));
   const [th, ix, md, rg, pk] = ext;
   const count = ext.filter(Boolean).length;
 
-  if (count === 0) return { name: 'fist', pinchDist };
-  if (count >= 4) return { name: 'open', pinchDist };
-  if (ix && !md && !rg && !pk) return { name: 'point', pinchDist };
-  if (!th && ix && md && !rg && !pk) return { name: 'peace', pinchDist };
-  if (th && !ix && !md && !rg && !pk) return { name: 'thumbup', pinchDist };
-  if (ix && !md && !rg && pk) return { name: 'rock', pinchDist };
+  let gestureName = 'hand';
+  if (pinchDist < 0.065) {
+    gestureName = 'pinch';
+  } else if (count === 0 || openness < 0.15) {
+    gestureName = 'fist';
+  } else if (count >= 4 && openness > 0.75) {
+    gestureName = 'open';
+  } else if (ix && !md && !rg && !pk) {
+    gestureName = 'point';
+  } else if (!th && ix && md && !rg && !pk) {
+    gestureName = 'peace';
+  } else if (th && !ix && !md && !rg && !pk) {
+    gestureName = 'thumbup';
+  } else if (ix && !md && !rg && pk) {
+    gestureName = 'rock';
+  }
 
-  return { name: 'hand', pinchDist };
+  return {
+    gestureName,
+    pinchDist,
+    openness,
+    handAngle,
+    pinchCenter: {
+      x: (thumbTip.x + indexTip.x) / 2,
+      y: (thumbTip.y + indexTip.y) / 2,
+      z: (thumbTip.z + indexTip.z) / 2,
+    },
+    indexTip: {
+      x: (indexTip.x - 0.5) * 6,
+      y: -(indexTip.y - 0.5) * 4.5,
+      z: -indexTip.z * 4,
+    }
+  };
 }
 
 export default function CameraTracker({
@@ -50,16 +90,14 @@ export default function CameraTracker({
   const handsRef = useRef(null);
   const cameraRef = useRef(null);
   const isRunningRef = useRef(false);
-  const smoothPosRef = useRef({ x: 0, y: 0, z: 0 });
+  const smoothPosRef = useRef({ x: 0, y: 0, z: 0, angle: 0, openness: 0.5, pinch: 0.2 });
 
   useEffect(() => {
     if (!enabled) {
       if (cameraRef.current) {
         try {
           cameraRef.current.stop();
-        } catch (e) {
-          // ignore
-        }
+        } catch (e) {}
       }
       if (videoRef.current && videoRef.current.srcObject) {
         const tracks = videoRef.current.srcObject.getTracks();
@@ -101,7 +139,6 @@ export default function CameraTracker({
           video.onloadedmetadata = () => video.play().then(res);
         });
 
-        // Initialize MediaPipe Hands
         const hands = new window.Hands({
           locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
         });
@@ -116,7 +153,7 @@ export default function CameraTracker({
         hands.onResults((results) => {
           if (!isMounted) return;
 
-          // Draw skeleton on preview canvas
+          // Draw clean hand skeleton on preview canvas
           const canvas = previewCanvasRef?.current;
           if (canvas && results.image) {
             canvas.width = results.image.width;
@@ -145,20 +182,24 @@ export default function CameraTracker({
             ctx.restore();
           }
 
-          // Process hand landmarks
+          // Process direct 1:1 hand metrics
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             const lm = results.multiHandLandmarks[0];
-            const palm = lm[9]; // Middle MCP
+            const palm = lm[9]; // Middle MCP (Palm Center)
             const targetX = (palm.x - 0.5) * 2;
             const targetY = -(palm.y - 0.5) * 2;
             const targetZ = -palm.z * 3;
 
-            // Exponential smoothing for fluid attractor motion
-            smoothPosRef.current.x += (targetX - smoothPosRef.current.x) * 0.25;
-            smoothPosRef.current.y += (targetY - smoothPosRef.current.y) * 0.25;
-            smoothPosRef.current.z += (targetZ - smoothPosRef.current.z) * 0.25;
+            const metrics = computeHandMetrics(lm);
 
-            const gestureData = detectGesture(lm);
+            // Responsive smoothing
+            const lerp = 0.35;
+            smoothPosRef.current.x += (targetX - smoothPosRef.current.x) * lerp;
+            smoothPosRef.current.y += (targetY - smoothPosRef.current.y) * lerp;
+            smoothPosRef.current.z += (targetZ - smoothPosRef.current.z) * lerp;
+            smoothPosRef.current.angle += (metrics.handAngle - smoothPosRef.current.angle) * lerp;
+            smoothPosRef.current.openness += (metrics.openness - smoothPosRef.current.openness) * lerp;
+            smoothPosRef.current.pinch += (metrics.pinchDist - smoothPosRef.current.pinch) * lerp;
 
             onHandUpdate({
               detected: true,
@@ -168,12 +209,14 @@ export default function CameraTracker({
               smoothX: smoothPosRef.current.x,
               smoothY: smoothPosRef.current.y,
               smoothZ: smoothPosRef.current.z,
-              landmarks: lm,
-              pinchDist: gestureData.pinchDist,
+              handAngle: smoothPosRef.current.angle,
+              openness: smoothPosRef.current.openness,
+              pinchDist: smoothPosRef.current.pinch,
+              indexTip: metrics.indexTip,
               confidence: results.multiHandedness?.[0]?.score || 0.92,
             });
 
-            onGestureChange(gestureData.name);
+            onGestureChange(metrics.gestureName);
           } else {
             onHandUpdate({
               detected: false,
@@ -218,9 +261,7 @@ export default function CameraTracker({
       if (cameraRef.current) {
         try {
           cameraRef.current.stop();
-        } catch (e) {
-          // ignore
-        }
+        } catch (e) {}
       }
       if (videoRef.current && videoRef.current.srcObject) {
         const tracks = videoRef.current.srcObject.getTracks();

@@ -1,29 +1,19 @@
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import * as THREE from 'three';
 import { COLOR_PALETTES, SHAPE_PRESETS } from '../constants/palettes';
-import { computeCurl } from '../utils/curlNoise';
-import { audioEngine } from '../utils/audioEngine';
 
 const Canvas3D = forwardRef(function Canvas3D(
   {
     paletteIndex = 0,
     shapeIndex = 0,
-    particleCount = 28000,
-    expandFactor = 1,
+    particleCount = 25000,
+    expandFactor = 1.0,
     waveActive = false,
     twistAmount = 0,
     shockwaveTrigger = 0,
-    rotationSpeed = { x: 0, y: 0 },
-    autoRotate = true,
     trailPoint = null,
-    handAttractor = null,
-    turbulenceIntensity = 1.0,
-    gravityPull = 1.0,
-    audioReactive = true,
-    physicsEngineMode = 'client', // 'client' | 'python'
-    pythonFramePositions = null,
+    handData = null, // Direct hand metrics: { detected, smoothX, smoothY, smoothZ, handAngle, openness, pinchDist, indexTip }
     onFpsUpdate,
-    onAudioMetricsUpdate,
   },
   ref
 ) {
@@ -43,34 +33,24 @@ const Canvas3D = forwardRef(function Canvas3D(
     basePositions: null,
     velocities: null,
     colors: null,
-    sizes: null,
     trailPositions: null,
     trailColors: null,
     trailIndex: 0,
-    rotX: 0,
-    rotY: 0,
-    velX: 0,
-    velY: 0,
-    zoom: 5.2,
-    targetZoom: 5.2,
+    zoom: 5.0,
+    targetZoom: 5.0,
     isDragging: false,
     prevMouse: { x: 0, y: 0 },
-    mouseScreen: { x: 0, y: 0, active: false },
+    mouseRotation: { x: 0, y: 0 },
     shockwaves: [],
     frameCount: 0,
     lastTime: performance.now(),
     fps: 60,
-    camShake: { x: 0, y: 0, z: 0 },
   });
 
-  // Expose methods for taking screenshots, triggering shockwaves, and reading current state
   useImperativeHandle(ref, () => ({
     takeScreenshot: () => {
       const { renderer } = stateRef.current;
-      if (renderer) {
-        return renderer.domElement.toDataURL('image/png');
-      }
-      return null;
+      return renderer ? renderer.domElement.toDataURL('image/png') : null;
     },
     getCurrentCoordinates: () => {
       return {
@@ -82,28 +62,20 @@ const Canvas3D = forwardRef(function Canvas3D(
       stateRef.current.shockwaves.push({
         time: 0,
         origin,
-        maxTime: 2.5,
-        strength: 1.0,
+        maxTime: 2.0,
       });
-      stateRef.current.camShake = {
-        x: (Math.random() - 0.5) * 0.35,
-        y: (Math.random() - 0.5) * 0.35,
-        z: (Math.random() - 0.5) * 0.35,
-      };
     },
     resetView: () => {
-      stateRef.current.rotX = 0;
-      stateRef.current.rotY = 0;
-      stateRef.current.velX = 0;
-      stateRef.current.velY = 0;
-      stateRef.current.targetZoom = 5.2;
+      stateRef.current.mouseRotation = { x: 0, y: 0 };
+      stateRef.current.targetZoom = 5.0;
       if (stateRef.current.particles) {
         stateRef.current.particles.rotation.set(0, 0, 0);
+        stateRef.current.particles.position.set(0, 0, 0);
       }
     },
   }));
 
-  // Initialize Three.js Scene and Particle Physics
+  // Initialize Three.js WebGL Scene
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
@@ -112,10 +84,10 @@ const Canvas3D = forwardRef(function Canvas3D(
     const height = window.innerHeight;
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x05060b, 0.032);
+    scene.fog = new THREE.FogExp2(0x05060b, 0.035);
 
-    const camera = new THREE.PerspectiveCamera(72, width / height, 0.1, 1000);
-    camera.position.z = 5.2;
+    const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 1000);
+    camera.position.z = 5.0;
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -128,7 +100,7 @@ const Canvas3D = forwardRef(function Canvas3D(
     renderer.setClearColor(0x05060b, 1);
     mount.appendChild(renderer.domElement);
 
-    // Build Particles with High-Precision Physics Arrays
+    // Generate Initial Clean Particle Geometry
     const count = particleCount;
     const preset = SHAPE_PRESETS[shapeIndex] || SHAPE_PRESETS[0];
     const initialPos = preset.generate(count);
@@ -137,7 +109,6 @@ const Canvas3D = forwardRef(function Canvas3D(
     const targetPos = new Float32Array(initialPos);
     const velocities = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
-    const sizes = new Float32Array(count);
 
     const palette = COLOR_PALETTES[paletteIndex] || COLOR_PALETTES[0];
     for (let i = 0; i < count; i++) {
@@ -147,39 +118,32 @@ const Canvas3D = forwardRef(function Canvas3D(
       colors[i3] = c.r;
       colors[i3 + 1] = c.g;
       colors[i3 + 2] = c.b;
-
-      velocities[i3] = (Math.random() - 0.5) * 0.02;
-      velocities[i3 + 1] = (Math.random() - 0.5) * 0.02;
-      velocities[i3 + 2] = (Math.random() - 0.5) * 0.02;
-
-      sizes[i] = Math.random() * 0.04 + 0.035;
     }
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(curPos, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    // High-Intensity Glowing Particle Texture
+    // Crisp glowing circular particle sprite
     const particleCanvas = document.createElement('canvas');
     particleCanvas.width = 64;
     particleCanvas.height = 64;
     const ctx = particleCanvas.getContext('2d');
     const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
     grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
-    grad.addColorStop(0.2, 'rgba(255, 255, 255, 0.9)');
-    grad.addColorStop(0.5, 'rgba(255, 255, 255, 0.3)');
+    grad.addColorStop(0.2, 'rgba(255, 255, 255, 0.85)');
+    grad.addColorStop(0.55, 'rgba(255, 255, 255, 0.25)');
     grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 64, 64);
-
     const texture = new THREE.CanvasTexture(particleCanvas);
 
     const material = new THREE.PointsMaterial({
-      size: 0.055,
+      size: 0.05,
       map: texture,
       vertexColors: true,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.9,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       sizeAttenuation: true,
@@ -188,8 +152,8 @@ const Canvas3D = forwardRef(function Canvas3D(
     const particles = new THREE.Points(geometry, material);
     scene.add(particles);
 
-    // 3D High-Energy Celestial Trail System
-    const trailCount = 800;
+    // 3D Trail System
+    const trailCount = 600;
     const trailPositions = new Float32Array(trailCount * 3);
     const trailColors = new Float32Array(trailCount * 3);
     const trailGeo = new THREE.BufferGeometry();
@@ -197,11 +161,11 @@ const Canvas3D = forwardRef(function Canvas3D(
     trailGeo.setAttribute('color', new THREE.BufferAttribute(trailColors, 3));
 
     const trailMat = new THREE.PointsMaterial({
-      size: 0.1,
+      size: 0.09,
       map: texture,
       vertexColors: true,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.85,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
@@ -209,7 +173,6 @@ const Canvas3D = forwardRef(function Canvas3D(
     const trailParticles = new THREE.Points(trailGeo, trailMat);
     scene.add(trailParticles);
 
-    // Save internal state refs
     stateRef.current = {
       ...stateRef.current,
       scene,
@@ -226,13 +189,11 @@ const Canvas3D = forwardRef(function Canvas3D(
       basePositions: basePos,
       velocities,
       colors,
-      sizes,
       trailPositions,
       trailColors,
       trailIndex: 0,
     };
 
-    // Window resize handler
     const handleResize = () => {
       const w = window.innerWidth;
       const h = window.innerHeight;
@@ -242,24 +203,19 @@ const Canvas3D = forwardRef(function Canvas3D(
     };
     window.addEventListener('resize', handleResize);
 
-    // Pointer Listeners
+    // Mouse Controls (Fallback when camera is off)
     const onPointerDown = (e) => {
       stateRef.current.isDragging = true;
       stateRef.current.prevMouse = { x: e.clientX, y: e.clientY };
     };
 
     const onPointerMove = (e) => {
-      const normX = (e.clientX / window.innerWidth - 0.5) * 2;
-      const normY = -(e.clientY / window.innerHeight - 0.5) * 2;
-      stateRef.current.mouseScreen = { x: normX, y: normY, active: true };
-
-      if (stateRef.current.isDragging) {
-        const dx = e.clientX - stateRef.current.prevMouse.x;
-        const dy = e.clientY - stateRef.current.prevMouse.y;
-        stateRef.current.velY += dx * 0.006;
-        stateRef.current.velX += dy * 0.006;
-        stateRef.current.prevMouse = { x: e.clientX, y: e.clientY };
-      }
+      if (!stateRef.current.isDragging) return;
+      const dx = e.clientX - stateRef.current.prevMouse.x;
+      const dy = e.clientY - stateRef.current.prevMouse.y;
+      stateRef.current.mouseRotation.y += dx * 0.005;
+      stateRef.current.mouseRotation.x += dy * 0.005;
+      stateRef.current.prevMouse = { x: e.clientX, y: e.clientY };
     };
 
     const onPointerUp = () => {
@@ -269,9 +225,9 @@ const Canvas3D = forwardRef(function Canvas3D(
     const onWheel = (e) => {
       e.preventDefault();
       stateRef.current.targetZoom = THREE.MathUtils.clamp(
-        stateRef.current.targetZoom + e.deltaY * 0.0035,
-        1.2,
-        15
+        stateRef.current.targetZoom + e.deltaY * 0.003,
+        1.5,
+        12.0
       );
     };
 
@@ -282,7 +238,7 @@ const Canvas3D = forwardRef(function Canvas3D(
     dom.addEventListener('wheel', onWheel, { passive: false });
 
     // ═══════════════════════════════════════════════════════════
-    //  MAIN SIMULATION & RENDER LOOP
+    //  DIRECT 1:1 HAND-CONTROLLED SIMULATION LOOP
     // ═══════════════════════════════════════════════════════════
     let animId;
     let clock = 0;
@@ -290,10 +246,9 @@ const Canvas3D = forwardRef(function Canvas3D(
     const animate = (time) => {
       animId = requestAnimationFrame(animate);
       const st = stateRef.current;
-      const deltaSec = 0.016;
-      clock += deltaSec;
+      clock += 0.016;
 
-      // FPS Metrics
+      // FPS Calculation
       st.frameCount++;
       if (time - st.lastTime >= 500) {
         st.fps = Math.round((st.frameCount * 1000) / (time - st.lastTime));
@@ -302,247 +257,127 @@ const Canvas3D = forwardRef(function Canvas3D(
         if (onFpsUpdate) onFpsUpdate(st.fps);
       }
 
-      // Audio Engine Metrics Update
-      const audio = audioEngine.update();
-      if (onAudioMetricsUpdate) onAudioMetricsUpdate(audio);
-
-      const audioBoost = audioReactive ? audio.energy * 1.8 : 0;
-      const bassPulse = audioReactive ? audio.bass * 2.2 : 0;
-
-      // Beat triggered micro-shockwave
-      if (audio.beat && audioReactive) {
-        st.shockwaves.push({
-          time: 0,
-          origin: { x: 0, y: 0, z: 0 },
-          maxTime: 1.6,
-          strength: 0.6 + audio.bass * 0.8,
-        });
-      }
-
-      // Camera Smooth Zoom & Camera Shake Damping
+      // Smooth Camera Zoom
       st.zoom += (st.targetZoom - st.zoom) * 0.08;
-      st.camShake.x *= 0.88;
-      st.camShake.y *= 0.88;
-      st.camShake.z *= 0.88;
+      camera.position.z = st.zoom;
 
-      camera.position.x = st.camShake.x;
-      camera.position.y = st.camShake.y;
-      camera.position.z = st.zoom + st.camShake.z;
-
-      // Dynamic Camera Rotation with Inertia
-      if (particles) {
-        st.rotX += st.velX;
-        st.rotY += st.velY;
-        st.velX *= 0.93;
-        st.velY *= 0.93;
-
-        const autoSpeedY = autoRotate ? 0.0008 + audioBoost * 0.002 : 0;
-        const autoSpeedX = autoRotate ? 0.0003 : 0;
-
-        particles.rotation.x = st.rotX + rotationSpeed.x;
-        particles.rotation.y = st.rotY + rotationSpeed.y;
-        st.rotY += autoSpeedY;
-        st.rotX += autoSpeedX;
-
-        // Dynamic Scale & Breathing Pulse
-        const targetScale = expandFactor * (1.0 + bassPulse * 0.18);
-        const curScale = particles.scale.x;
-        particles.scale.setScalar(curScale + (targetScale - curScale) * 0.1);
-      }
-
-      // Particle Physics Arrays
       const cur = st.currentPositions;
       const tgt = st.targetPositions;
       const base = st.basePositions;
-      const vel = st.velocities;
       const posAttr = st.geometry.attributes.position;
-
-      // Active Attractor Position (Hand / Mouse Gravity)
-      let attractor = null;
-      if (handAttractor && handAttractor.active) {
-        attractor = {
-          x: handAttractor.x * 4.2,
-          y: handAttractor.y * 3.2,
-          z: (handAttractor.z || 0) * 3.0,
-          strength: gravityPull * 1.8,
-        };
-      } else if (st.mouseScreen.active && st.isDragging) {
-        attractor = {
-          x: st.mouseScreen.x * 4.0,
-          y: st.mouseScreen.y * 3.0,
-          z: 0,
-          strength: gravityPull * 1.2,
-        };
-      }
 
       // Update Shockwaves
       for (let s = st.shockwaves.length - 1; s >= 0; s--) {
         const sw = st.shockwaves[s];
-        sw.time += 0.045;
+        sw.time += 0.04;
         if (sw.time > sw.maxTime) {
           st.shockwaves.splice(s, 1);
         }
       }
 
-      const activePreset = SHAPE_PRESETS[shapeIndex] || SHAPE_PRESETS[0];
-      const dynamicsType = activePreset.dynamics || 'galaxy-swirl';
-      const hasTwist = Math.abs(twistAmount) > 0.01;
-      const waveAmp = waveActive ? 0.25 + audioBoost * 0.2 : 0;
-      const turbScale = turbulenceIntensity * (0.8 + audioBoost * 0.7);
+      // ── DIRECT HAND TRANSFORMS ──────────────────────────────
+      if (particles) {
+        if (handData && handData.detected) {
+          // 1. Position follows hand palm directly in 3D
+          const targetPosX = handData.smoothX * 2.2;
+          const targetPosY = handData.smoothY * 1.8;
+          const targetPosZ = (handData.smoothZ || 0) * 1.5;
+          particles.position.x += (targetPosX - particles.position.x) * 0.15;
+          particles.position.y += (targetPosY - particles.position.y) * 0.15;
+          particles.position.z += (targetPosZ - particles.position.z) * 0.15;
 
-      // If Python WebSocket frame is available and in Python mode, apply directly
-      if (physicsEngineMode === 'python' && pythonFramePositions && pythonFramePositions.length > 0) {
-        const pyLen = Math.min(pythonFramePositions.length, count * 3);
-        for (let i = 0; i < pyLen; i++) {
-          cur[i] = pythonFramePositions[i];
+          // 2. Rotation follows hand tilt & palm angle directly
+          const targetRotY = handData.smoothX * 1.6;
+          const targetRotX = -handData.smoothY * 1.4;
+          const targetRotZ = handData.handAngle || 0;
+          particles.rotation.y += (targetRotY - particles.rotation.y) * 0.12;
+          particles.rotation.x += (targetRotX - particles.rotation.x) * 0.12;
+          particles.rotation.z += (targetRotZ - particles.rotation.z) * 0.12;
+
+          // 3. Dynamic Scale follows Hand Openness & Pinch directly
+          let handScale = 1.0;
+          if (handData.pinchDist !== undefined && handData.pinchDist < 0.075) {
+            // Squeezed pinch -> shrink into singularity
+            const pinchRatio = Math.max(0.0, handData.pinchDist / 0.075);
+            handScale = 0.2 + pinchRatio * 0.6;
+          } else if (handData.openness !== undefined) {
+            // Open hand expands (0.4 to 2.2x)
+            handScale = 0.4 + handData.openness * 1.8;
+          }
+          const curScale = particles.scale.x;
+          particles.scale.setScalar(curScale + (handScale * expandFactor - curScale) * 0.14);
+        } else {
+          // Mouse Fallback: Rotate with mouse drag & default resting scale
+          particles.position.set(0, 0, 0);
+          particles.rotation.x = st.mouseRotation.x;
+          particles.rotation.y = st.mouseRotation.y + clock * 0.15; // gentle slow cosmic rotation
+          particles.rotation.z = 0;
+
+          const curScale = particles.scale.x;
+          particles.scale.setScalar(curScale + (expandFactor - curScale) * 0.1);
         }
-        posAttr.needsUpdate = true;
-        renderer.render(scene, camera);
-        return;
       }
 
-      // ═══════════════════════════════════════════════════════════
-      //  CLIENT-SIDE HYPER-DYNAMIC PHYSICS SIMULATION
-      // ═══════════════════════════════════════════════════════════
+      // ── PER-PARTICLE DISPLACEMENTS & FORMATION MORPHING ───────
+      const hasTwist = Math.abs(twistAmount) > 0.01;
+      const isWaveOn = waveActive;
+      const hasShockwave = st.shockwaves.length > 0;
+      const isPointing = handData?.detected && handData?.indexTip;
+
       for (let i = 0; i < count; i++) {
         const i3 = i * 3;
-        let px = cur[i3];
-        let py = cur[i3 + 1];
-        let pz = cur[i3 + 2];
 
-        // 1. Morphing towards Target Formation Baseline
-        const tx = tgt[i3];
-        const ty = tgt[i3 + 1];
-        const tz = tgt[i3 + 2];
+        // Smooth morphing to target preset positions
+        base[i3] += (tgt[i3] - base[i3]) * 0.05;
+        base[i3 + 1] += (tgt[i3 + 1] - base[i3 + 1]) * 0.05;
+        base[i3 + 2] += (tgt[i3 + 2] - base[i3 + 2]) * 0.05;
 
-        base[i3] += (tx - base[i3]) * 0.045;
-        base[i3 + 1] += (ty - base[i3 + 1]) * 0.045;
-        base[i3 + 2] += (tz - base[i3 + 2]) * 0.045;
+        let px = base[i3];
+        let py = base[i3 + 1];
+        let pz = base[i3 + 2];
 
-        let bx = base[i3];
-        let by = base[i3 + 1];
-        let bz = base[i3 + 2];
-
-        // 2. Formation-Specific Dynamic Flow Vector
-        if (dynamicsType === 'vortex-jets') {
-          const isJet = i >= Math.floor(count * 0.7);
-          if (isJet) {
-            const dir = i % 2 === 0 ? 1 : -1;
-            by += dir * (0.06 + audioBoost * 0.04);
-            const jetAngle = clock * 4.0 * dir;
-            bx += Math.cos(jetAngle) * 0.015;
-            bz += Math.sin(jetAngle) * 0.015;
-            if (Math.abs(by) > 5.5) {
-              by = dir * 0.5;
-              bx = (Math.random() - 0.5) * 0.2;
-              bz = (Math.random() - 0.5) * 0.2;
-            }
-            base[i3] = bx;
-            base[i3 + 1] = by;
-            base[i3 + 2] = bz;
-          } else {
-            const rDisk = Math.sqrt(bx * bx + bz * bz) + 0.1;
-            const omega = (0.04 / Math.pow(rDisk, 1.2)) * (1.0 + audioBoost * 0.8);
-            const cosO = Math.cos(omega);
-            const sinO = Math.sin(omega);
-            const nx = bx * cosO - bz * sinO;
-            const nz = bx * sinO + bz * cosO;
-            bx = nx;
-            bz = nz;
-            base[i3] = bx;
-            base[i3 + 2] = bz;
-          }
-        } else if (dynamicsType === 'warp-tunnel') {
-          bz += 0.12 + audioBoost * 0.18;
-          if (bz > 6.0) bz = -6.5;
-          base[i3 + 2] = bz;
-        } else if (dynamicsType === 'torus-vortex') {
-          const uAngle = clock * 0.8;
-          const vAngle = clock * 2.2;
-          const R = 2.2;
-          const r = 0.85 + Math.sin(clock * 3.0 + i * 0.01) * 0.15;
-          const u = (i / count) * Math.PI * 2 + uAngle;
-          const v = ((i % 100) / 100) * Math.PI * 2 + vAngle;
-          bx = (R + r * Math.cos(v)) * Math.cos(u);
-          by = r * Math.sin(v);
-          bz = (R + r * Math.cos(v)) * Math.sin(u);
-        } else if (dynamicsType === 'neural-web') {
-          const pulse = Math.sin(clock * 4.0 + i * 0.05) * 0.06;
-          bx += pulse;
-          by += pulse;
-          bz += pulse;
-        }
-
-        // 3. Fluid 3D Curl Noise Turbulence
-        if (turbScale > 0.05) {
-          const noiseSample = computeCurl(
-            bx * 0.45 + clock * 0.15,
-            by * 0.45 + clock * 0.15,
-            bz * 0.45 + clock * 0.15
-          );
-          vel[i3] += noiseSample.x * 0.012 * turbScale;
-          vel[i3 + 1] += noiseSample.y * 0.012 * turbScale;
-          vel[i3 + 2] += noiseSample.z * 0.012 * turbScale;
-        }
-
-        // 4. Gravitational Attractor Force Field
-        if (attractor) {
-          const dx = attractor.x - px;
-          const dy = attractor.y - py;
-          const dz = attractor.z - pz;
-          const distSq = dx * dx + dy * dy + dz * dz + 0.2;
-          const dist = Math.sqrt(distSq);
-          const force = (attractor.strength / distSq) * 0.04;
-
-          vel[i3] += (dx / dist) * force - (dz / dist) * force * 0.8;
-          vel[i3 + 1] += (dy / dist) * force;
-          vel[i3 + 2] += (dz / dist) * force + (dx / dist) * force * 0.8;
-        }
-
-        // 5. Elastic Spring Return to Base Position
-        const springK = 0.08;
-        vel[i3] += (bx - px) * springK;
-        vel[i3 + 1] += (by - py) * springK;
-        vel[i3 + 2] += (bz - pz) * springK;
-
-        vel[i3] *= 0.88;
-        vel[i3 + 1] *= 0.88;
-        vel[i3 + 2] *= 0.88;
-
-        px += vel[i3];
-        py += vel[i3 + 1];
-        pz += vel[i3 + 2];
-
-        // 6. Wave Ripple Oscillation
+        // 1. Optional Wave Oscillation (Horns gesture or W key)
         const r = Math.sqrt(px * px + pz * pz);
-        if (waveAmp > 0) {
-          py += Math.sin(r * 3.2 - clock * 5.0) * waveAmp * Math.max(0, 1.2 - r * 0.25);
+        if (isWaveOn) {
+          py += Math.sin(r * 2.8 - clock * 4.0) * 0.18 * Math.max(0, 1 - r * 0.2);
         }
 
-        // 7. Space-Time Twist Torque
+        // 2. Space-Time Twist Torque (Fist gesture or T key)
         if (hasTwist) {
-          const twistAngle = twistAmount * r * 0.45;
-          const cosT = Math.cos(twistAngle);
-          const sinT = Math.sin(twistAngle);
-          const nx = px * cosT - pz * sinT;
-          const nz = px * sinT + pz * cosT;
+          const angle = twistAmount * r * 0.45;
+          const cosA = Math.cos(angle);
+          const sinA = Math.sin(angle);
+          const nx = px * cosA - pz * sinA;
+          const nz = px * sinA + pz * cosA;
           px = nx;
           pz = nz;
         }
 
-        // 8. Gravitational Shockwave Bursts
+        // 3. Shockwave Radial Bursts (Open hand gesture or Click/Space)
         for (let s = 0; s < st.shockwaves.length; s++) {
           const sw = st.shockwaves[s];
-          const swRadius = sw.time * 4.2;
-          const distFromOrigin = Math.hypot(px - sw.origin.x, pz - sw.origin.z);
-          const waveDelta = distFromOrigin - swRadius;
-          const shockIntensity = Math.exp(-(waveDelta * waveDelta) / 0.4) * sw.strength;
+          const swRadius = sw.time * 3.8;
+          const dist = Math.hypot(px - sw.origin.x, pz - sw.origin.z);
+          const waveDelta = dist - swRadius;
+          const shockIntensity = Math.exp(-(waveDelta * waveDelta) / 0.35);
           const decay = Math.max(0, 1.0 - sw.time / sw.maxTime);
 
-          const push = shockIntensity * 0.28 * decay;
+          const push = shockIntensity * 0.25 * decay;
           px += (px - sw.origin.x) * push;
-          py += shockIntensity * 0.4 * decay * Math.sin(sw.time * 8.0);
+          py += shockIntensity * 0.3 * decay;
           pz += (pz - sw.origin.z) * push;
+        }
+
+        // 4. Pointing Index Finger Attraction Stream (Point gesture)
+        if (isPointing && (i % 8 === 0)) {
+          const tip = handData.indexTip;
+          const dx = tip.x - px;
+          const dy = tip.y - py;
+          const dz = tip.z - pz;
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz + 0.1);
+          px += (dx / dist) * 0.12;
+          py += (dy / dist) * 0.12;
+          pz += (dz / dist) * 0.12;
         }
 
         cur[i3] = px;
@@ -570,9 +405,9 @@ const Canvas3D = forwardRef(function Canvas3D(
       trailMat.dispose();
       renderer.dispose();
     };
-  }, [particleCount, physicsEngineMode]);
+  }, [particleCount]);
 
-  // Update Color Palettes Dynamically
+  // Color Palette Updates
   useEffect(() => {
     const st = stateRef.current;
     if (!st.geometry || !st.colors) return;
@@ -590,7 +425,7 @@ const Canvas3D = forwardRef(function Canvas3D(
     colAttr.needsUpdate = true;
   }, [paletteIndex, particleCount]);
 
-  // Switch Shape Formations Dynamically
+  // Shape Preset Formation Updates
   useEffect(() => {
     const st = stateRef.current;
     if (!st.targetPositions) return;
@@ -601,37 +436,31 @@ const Canvas3D = forwardRef(function Canvas3D(
     }
   }, [shapeIndex, particleCount]);
 
-  // Trigger Shockwave from Parent Prop
+  // Trigger Shockwave Prop
   useEffect(() => {
     if (shockwaveTrigger > 0) {
       stateRef.current.shockwaves.push({
         time: 0,
         origin: { x: 0, y: 0, z: 0 },
-        maxTime: 2.5,
-        strength: 1.2,
+        maxTime: 2.0,
       });
-      stateRef.current.camShake = {
-        x: (Math.random() - 0.5) * 0.4,
-        y: (Math.random() - 0.5) * 0.4,
-        z: (Math.random() - 0.5) * 0.4,
-      };
     }
   }, [shockwaveTrigger]);
 
-  // Add 3D High-Energy Celestial Trail Stream
+  // Add 3D Trail Stream
   useEffect(() => {
     if (!trailPoint) return;
     const st = stateRef.current;
     if (!st.trailPositions || !st.trailGeo) return;
 
-    const n = 800;
+    const n = 600;
     const i = (st.trailIndex % n) * 3;
     st.trailPositions[i] = trailPoint.x;
     st.trailPositions[i + 1] = trailPoint.y;
     st.trailPositions[i + 2] = trailPoint.z;
 
     const pal = COLOR_PALETTES[paletteIndex] || COLOR_PALETTES[0];
-    const c = new THREE.Color().setHSL(...pal.fn((Date.now() * 0.0015) % 1));
+    const c = new THREE.Color().setHSL(...pal.fn((Date.now() * 0.001) % 1));
     st.trailColors[i] = c.r;
     st.trailColors[i + 1] = c.g;
     st.trailColors[i + 2] = c.b;

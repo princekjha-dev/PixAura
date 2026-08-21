@@ -19,28 +19,26 @@ export default function App() {
   // 3D Canvas & Physics States
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [shapeIndex, setShapeIndex] = useState(0);
-  const [particleCount, setParticleCount] = useState(30000);
+  const [particleCount, setParticleCount] = useState(25000);
   const [expandFactor, setExpandFactor] = useState(1.0);
   const [waveActive, setWaveActive] = useState(false);
   const [twistAmount, setTwistAmount] = useState(0);
-  const [turbulenceIntensity, setTurbulenceIntensity] = useState(1.2);
+  const [turbulenceIntensity, setTurbulenceIntensity] = useState(1.0);
   const [gravityPull, setGravityPull] = useState(1.5);
   const [kerrSpin, setKerrSpin] = useState(0.94);
-  const [autoRotate, setAutoRotate] = useState(true);
-  const [rotationSpeed, setRotationSpeed] = useState({ x: 0, y: 0 });
+  const [autoRotate, setAutoRotate] = useState(false); // default false so it doesn't move randomly on its own!
   const [shockwaveTrigger, setShockwaveTrigger] = useState(0);
   const [trailPoint, setTrailPoint] = useState(null);
-  const [handAttractor, setHandAttractor] = useState(null);
+  const [handData, setHandData] = useState(null);
   const [fps, setFps] = useState(60);
 
   // Simulation Architecture Engine Mode ('client' | 'python')
   const [physicsEngineMode, setPhysicsEngineMode] = useState('client');
-  const [pythonFramePositions, setPythonFramePositions] = useState(null);
   const [pythonStatus, setPythonStatus] = useState({ status: 'connecting', latency: null });
   const [pythonMetrics, setPythonMetrics] = useState(null);
 
   // Audio Reactivity States
-  const [audioMode, setAudioMode] = useState('synth');
+  const [audioMode, setAudioMode] = useState('off'); // default off so it doesn't pulse randomly unless user wants it
   const [audioMetrics, setAudioMetrics] = useState({ bass: 0, mid: 0, treble: 0, energy: 0 });
 
   // Camera & Tracking States
@@ -71,10 +69,10 @@ export default function App() {
     setToasts((prev) => [...prev.slice(-3), { id, message }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3200);
+    }, 3000);
   }, []);
 
-  // Initialize Audio Engine Mode on Startup or Mode Change
+  // Initialize Audio Engine
   useEffect(() => {
     audioEngine.setMode(audioMode);
   }, [audioMode]);
@@ -82,83 +80,41 @@ export default function App() {
   // Connect Python WebSocket Bridge
   useEffect(() => {
     const onFrame = (frameData) => {
-      if (frameData.positions) {
-        setPythonFramePositions(frameData.positions);
-      }
       if (frameData.metrics) {
         setPythonMetrics(frameData.metrics);
       }
     };
-
     const onStatus = (statusData) => {
       setPythonStatus(statusData);
     };
-
     pythonBridge.connect(onFrame, onStatus);
-
     return () => {
       pythonBridge.disconnect();
     };
   }, []);
 
-  // Send Physics Step to Python Backend when in Python mode or streaming
-  useEffect(() => {
-    if (physicsEngineMode === 'python' && pythonStatus.status === 'online') {
-      const attractor = handAttractor || { x: 0, y: 0, z: 0, strength: gravityPull };
-      pythonBridge.sendStep(attractor);
-    }
-  }, [physicsEngineMode, pythonStatus, handAttractor, gravityPull]);
-
-  // Hand update callback from MediaPipe
+  // Direct 1:1 Hand update callback from MediaPipe
   const handleHandUpdate = useCallback(
-    (handData) => {
-      if (!handData.detected) {
+    (data) => {
+      if (!data.detected) {
         setHandDetected(false);
-        setHandAttractor(null);
+        setHandData(null);
         return;
       }
 
       setHandDetected(true);
-      setCameraConfidence(handData.confidence);
+      setCameraConfidence(data.confidence);
+      setHandData(data);
 
-      // 3D Hand Gravitational Attractor Force Field
-      const attractorData = {
-        x: handData.smoothX,
-        y: handData.smoothY,
-        z: handData.smoothZ || 0,
-        active: true,
-        strength: gravityPull,
-      };
-      setHandAttractor(attractorData);
-
-      if (physicsEngineMode === 'python') {
-        pythonBridge.sendStep(attractorData);
-      }
-
-      // Map hand movement to rotational momentum
-      const deadZone = 0.04;
-      const x = Math.abs(handData.smoothX) > deadZone ? handData.smoothX : 0;
-      const y = Math.abs(handData.smoothY) > deadZone ? handData.smoothY : 0;
-
-      setRotationSpeed({
-        x: -y * 1.8,
-        y: x * 1.8,
-      });
-
-      // Index finger point trail
-      if (handData.landmarks && currentGesture === 'point') {
-        const indexTip = handData.landmarks[8];
-        setTrailPoint({
-          x: (indexTip.x - 0.5) * 6,
-          y: -(indexTip.y - 0.5) * 4,
-          z: -indexTip.z * 4,
-        });
+      // Pointing trail
+      if (data.indexTip && currentGesture === 'point') {
+        setTrailPoint(data.indexTip);
       }
     },
-    [currentGesture, gravityPull, physicsEngineMode]
+    [currentGesture]
   );
 
-  // Gesture Change & Processing
+  // Gesture Change Handler
   const handleGestureChange = useCallback(
     (gesture) => {
       const prev = prevGestureRef.current;
@@ -166,29 +122,25 @@ export default function App() {
       setCurrentGesture(gesture);
 
       if (gesture === 'pinch') {
-        setExpandFactor((prevExp) => Math.min(3.2, prevExp + 0.04));
-        if (prev !== 'pinch') addToast('Pinch: Compressing Singularity Scale');
+        if (prev !== 'pinch') addToast('Pinch: Compressing into Singularity');
       }
 
       if (gesture === 'fist') {
-        setExpandFactor((prevExp) => Math.max(0.35, prevExp - 0.03));
-        setTwistAmount((prevTwist) => Math.min(3.0, prevTwist + 0.06));
-        if (prev !== 'fist') addToast('Closed Fist: Black Hole Event Horizon Collapse');
+        setTwistAmount(2.2);
+        if (prev !== 'fist') addToast('Closed Fist: Inward Collapse');
+      } else if (prev === 'fist') {
+        setTwistAmount(0);
       }
 
-      if (gesture === 'open') {
-        setExpandFactor((prevExp) => Math.min(3.0, prevExp + 0.03));
-        setTwistAmount((prevTwist) => Math.max(0, prevTwist - 0.08));
-        if (prev !== 'open') {
-          setShockwaveTrigger((c) => c + 1);
-          addToast('Open Palm: Big Bang Supernova Shockwave');
-        }
+      if (gesture === 'open' && prev !== 'open') {
+        setShockwaveTrigger((c) => c + 1);
+        addToast('Open Palm: Outward Shockwave Burst');
       }
 
       if (gesture === 'peace' && prev !== 'peace') {
         setPaletteIndex((i) => {
           const next = (i + 1) % COLOR_PALETTES.length;
-          addToast(`Theme: ${COLOR_PALETTES[next].name}`);
+          addToast(`Color Theme: ${COLOR_PALETTES[next].name}`);
           return next;
         });
       }
@@ -196,14 +148,14 @@ export default function App() {
       if (gesture === 'thumbup' && prev !== 'thumbup') {
         setAutoRotate((prevVal) => {
           const next = !prevVal;
-          addToast(`Celestial Orbit: ${next ? 'Active' : 'Paused'}`);
+          addToast(`Celestial Rotation: ${next ? 'ON' : 'OFF'}`);
           return next;
         });
       }
 
       if (gesture === 'rock') {
         setWaveActive(true);
-        if (prev !== 'rock') addToast('Horns: Space-Time Harmonic Wave');
+        if (prev !== 'rock') addToast('Horns Sign: Wave Ripple Effect');
       } else if (prev === 'rock') {
         setWaveActive(false);
       }
@@ -218,7 +170,7 @@ export default function App() {
         addToast(`Camera: ${status.error}`);
         setCameraEnabled(false);
       } else if (status.initialized) {
-        addToast('Hand Gravity Tracking Initialized');
+        addToast('Camera Hand Tracking Ready: Move hand to control');
       }
     },
     [addToast]
@@ -232,8 +184,8 @@ export default function App() {
       switch (e.code) {
         case 'Space':
           e.preventDefault();
-          setExpandFactor((cur) => (cur > 1.3 ? 0.6 : 2.2));
-          addToast('Toggle Singularity Scale');
+          setExpandFactor((cur) => (cur > 1.3 ? 0.6 : 1.8));
+          addToast('Toggle Particle Scale');
           break;
         case 'KeyP':
           setPaletteIndex((i) => {
@@ -250,13 +202,13 @@ export default function App() {
           });
           break;
         case 'KeyT':
-          setTwistAmount((cur) => (cur === 0 ? 2.4 : 0));
-          addToast('Toggle Vortex Torque');
+          setTwistAmount((cur) => (cur === 0 ? 2.0 : 0));
+          addToast('Toggle Vortex Twist');
           break;
         case 'KeyW':
           setWaveActive((cur) => {
             const next = !cur;
-            addToast(`Wave Oscillation: ${next ? 'ON' : 'OFF'}`);
+            addToast(`Wave Ripple: ${next ? 'ON' : 'OFF'}`);
             return next;
           });
           break;
@@ -282,7 +234,7 @@ export default function App() {
           setExpandFactor(1.0);
           setTwistAmount(0);
           setWaveActive(false);
-          addToast('Scene Reset to Default');
+          addToast('Scene Reset to Center');
           break;
         case 'KeyC':
           setPreviewVisible((v) => !v);
@@ -304,25 +256,10 @@ export default function App() {
 
   // Cycle audio mode
   const handleCycleAudioMode = () => {
-    const modes = ['synth', 'mic', 'off'];
+    const modes = ['off', 'synth', 'mic'];
     const next = modes[(modes.indexOf(audioMode) + 1) % modes.length];
     setAudioMode(next);
     addToast(`Audio Reactivity: ${next === 'synth' ? 'Cosmic Beats' : next === 'mic' ? 'Live Mic' : 'Off'}`);
-  };
-
-  // Switch simulation engine mode
-  const handleChangePhysicsEngineMode = (mode) => {
-    setPhysicsEngineMode(mode);
-    if (mode === 'python') {
-      if (pythonStatus.status === 'online') {
-        pythonBridge.sendReset(SHAPE_PRESETS[shapeIndex].id, particleCount, { spin: kerrSpin });
-        addToast('Switched to Python WebSocket Physics Engine');
-      } else {
-        addToast('Python Server Offline: Defaulting to WebGL GPU Engine');
-      }
-    } else {
-      addToast('Switched to Client WebGL 3D GPU Engine');
-    }
   };
 
   // Recording Session Controls
@@ -369,14 +306,14 @@ export default function App() {
     setShowPermissionModal(false);
     setCameraEnabled(false);
     audioEngine.initContext();
-    addToast('Kinetic Mouse Mode Active');
+    addToast('Mouse Mode Active: Drag to rotate view, scroll to zoom');
   };
 
   const coordinates = canvas3DRef.current ? canvas3DRef.current.getCurrentCoordinates() : null;
 
   return (
     <main style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden' }}>
-      {/* 3D WebGL / Python Particle Canvas */}
+      {/* 3D WebGL Particle Canvas with Direct Hand Control */}
       <Canvas3D
         ref={canvas3DRef}
         paletteIndex={paletteIndex}
@@ -385,18 +322,10 @@ export default function App() {
         expandFactor={expandFactor}
         waveActive={waveActive}
         twistAmount={twistAmount}
-        turbulenceIntensity={turbulenceIntensity}
-        gravityPull={gravityPull}
-        audioReactive={audioMode !== 'off'}
-        physicsEngineMode={physicsEngineMode}
-        pythonFramePositions={pythonFramePositions}
         shockwaveTrigger={shockwaveTrigger}
-        rotationSpeed={rotationSpeed}
-        autoRotate={autoRotate}
         trailPoint={trailPoint}
-        handAttractor={handAttractor}
+        handData={handData}
         onFpsUpdate={setFps}
-        onAudioMetricsUpdate={setAudioMetrics}
       />
 
       {/* MediaPipe Camera Tracker */}
@@ -428,7 +357,7 @@ export default function App() {
           setExpandFactor(1.0);
           setTwistAmount(0);
           setWaveActive(false);
-          addToast('Scene Reset');
+          addToast('Scene Reset to Center');
         }}
         onTakeScreenshot={handleTakeScreenshot}
       />
@@ -443,7 +372,7 @@ export default function App() {
         pythonMetrics={pythonMetrics}
         particleCount={particleCount}
         currentFormation={SHAPE_PRESETS[shapeIndex].name}
-        attractorPos={handAttractor}
+        attractorPos={handData ? { x: handData.smoothX, y: handData.smoothY, z: handData.smoothZ } : null}
         audioMetrics={audioMetrics}
         physicsEngineMode={physicsEngineMode}
       />
@@ -460,9 +389,6 @@ export default function App() {
         currentShapeIndex={shapeIndex}
         onSelectShape={(idx) => {
           setShapeIndex(idx);
-          if (physicsEngineMode === 'python') {
-            pythonBridge.sendReset(SHAPE_PRESETS[idx].id, particleCount, { spin: kerrSpin });
-          }
           addToast(`Formation: ${SHAPE_PRESETS[idx].name}`);
         }}
         currentPaletteIndex={paletteIndex}
@@ -507,7 +433,7 @@ export default function App() {
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
         physicsEngineMode={physicsEngineMode}
-        onChangePhysicsEngineMode={handleChangePhysicsEngineMode}
+        onChangePhysicsEngineMode={setPhysicsEngineMode}
         particleCount={particleCount}
         onChangeParticleCount={setParticleCount}
         paletteIndex={paletteIndex}
